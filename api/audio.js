@@ -1,11 +1,13 @@
-import { GROQ_API_KEY, WHISPER_MODEL_ID, MODEL_ID } from '../config.js';
+import { GROQ_API_KEY, MODEL_ID, WHISPER_MODEL_ID } from '../config.js';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
-import Busboy from 'busboy';
+import { Blob } from 'fetch-blob';
 
 // Функция для отправки запроса к LLM модели
 async function sendToLLM(prompt) {
   try {
+    console.log('Отправка запроса к LLM модели:', MODEL_ID);
+    
     const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -32,6 +34,7 @@ async function sendToLLM(prompt) {
         usage: data.usage
       };
     } else {
+      console.error('LLM API Error:', data);
       return {
         success: false,
         error: data.error?.message || 'Ошибка при обращении к API Groq'
@@ -43,6 +46,54 @@ async function sendToLLM(prompt) {
       success: false,
       error: 'Внутренняя ошибка сервера при обработке запроса LLM'
     };
+  }
+}
+
+// Функция для транскрибации аудио с помощью Whisper API
+async function transcribeAudio(audioBuffer, audioMimeType = 'audio/wav') {
+  try {
+    console.log('Транскрибация аудио, размер:', audioBuffer.length, 'байт');
+    console.log('Используемая модель для транскрибации:', WHISPER_MODEL_ID);
+    
+    // Создаем FormData для отправки файла
+    const formData = new FormData();
+    
+    // Добавляем аудио файл
+    const audioBlob = new Blob([audioBuffer], { type: audioMimeType });
+    formData.append('file', audioBlob, 'audio.wav');
+    
+    // Указываем модель
+    formData.append('model', WHISPER_MODEL_ID);
+    
+    // Указываем формат ответа (json)
+    formData.append('response_format', 'json');
+    
+    // Задаем температуру (0 для наиболее определенного результата)
+    formData.append('temperature', '0');
+    
+    // Отправляем запрос к Whisper API
+    console.log('Отправляем запрос к Whisper API...');
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`
+      },
+      body: formData
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Whisper API ответил с ошибкой:', response.status, errorText);
+      throw new Error(`Ошибка API Whisper: ${response.status} ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log('Получен ответ от Whisper API:', data);
+    
+    return data;
+  } catch (error) {
+    console.error('Ошибка при транскрибации:', error);
+    throw error;
   }
 }
 
@@ -61,138 +112,81 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Ожидается multipart/form-data' });
     }
     
-    // Создаем парсер для multipart/form-data
-    const busboy = Busboy({ headers: req.headers });
-    
-    // Переменные для хранения данных
-    let audioBuffer = null;
+    // Получаем данные из запроса
+    const chunks = [];
     let audioMimeType = 'audio/wav';
     
-    // Обработка полей формы
-    busboy.on('field', (fieldname, val) => {
-      if (fieldname === 'model') {
-        modelName = val;
+    // Собираем все куски данных
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    
+    // Объединяем в один буфер
+    const buffer = Buffer.concat(chunks);
+    
+    // Ищем границу multipart/form-data
+    const boundary = req.headers['content-type'].match(/boundary=(?:"([^"]+)"|([^;]+))/i)[1] || 'boundary';
+    
+    // Ищем содержимое файла в multipart/form-data
+    const fileDataMatch = buffer.toString().match(new RegExp(`Content-Type: (audio\\/[^\r\n]+)[\r\n]+[\r\n]+(.*?)--${boundary}`, 's'));
+    
+    if (!fileDataMatch) {
+      console.error('Не удалось найти аудио файл в запросе');
+      return res.status(400).json({ error: 'Аудио файл не найден в запросе' });
+    }
+    
+    // Извлекаем MIME тип и данные файла
+    audioMimeType = fileDataMatch[1] || 'audio/wav';
+    
+    // Определяем позицию начала аудио данных
+    const contentTypePos = buffer.indexOf(Buffer.from(`Content-Type: ${audioMimeType}`));
+    const dataStartPos = buffer.indexOf(Buffer.from('\r\n\r\n'), contentTypePos) + 4;
+    const dataEndPos = buffer.lastIndexOf(Buffer.from(`--${boundary}--`)) - 2;
+    
+    // Извлекаем аудио данные
+    const audioBuffer = buffer.slice(dataStartPos, dataEndPos);
+    
+    if (!audioBuffer || audioBuffer.length === 0) {
+      console.error('Аудио буфер пуст');
+      return res.status(400).json({ error: 'Аудио данные не найдены или пусты' });
+    }
+    
+    console.log('Получены аудио данные, размер:', audioBuffer.length, 'байт, тип:', audioMimeType);
+    
+    try {
+      // Отправляем аудио на транскрибацию
+      const whisperData = await transcribeAudio(audioBuffer, audioMimeType);
+      
+      if (!whisperData || !whisperData.text) {
+        console.error('Некорректный ответ от Whisper API:', whisperData);
+        return res.status(500).json({ error: 'Некорректный ответ от сервиса транскрибации' });
       }
-    });
-    
-    // Обработка файлов
-    busboy.on('file', async (fieldname, file, info) => {
-      if (fieldname === 'audio') {
-        const { filename, encoding, mimeType } = info;
-        console.log(`Получен файл: ${filename}, тип: ${mimeType}`);
-        audioMimeType = mimeType || 'audio/wav';
-        
-        // Собираем файл в буфер
-        const chunks = [];
-        file.on('data', (chunk) => {
-          chunks.push(chunk);
+      
+      // Отправляем транскрибированный текст к LLM модели
+      const llmResult = await sendToLLM(whisperData.text);
+      
+      if (llmResult.success) {
+        res.json({
+          transcribedText: whisperData.text,
+          llmResponse: llmResult.text,
+          model: llmResult.model,
+          usage: llmResult.usage
         });
-        
-        // Когда файл полностью получен
-        file.on('end', () => {
-          audioBuffer = Buffer.concat(chunks);
-          console.log(`Файл получен, размер: ${audioBuffer.length} байт`);
-        });
+      } else {
+        res.status(500).json({ error: llmResult.error });
       }
-    });
-    
-    // После полной обработки формы
-    busboy.on('finish', async () => {
-      try {
-        if (!audioBuffer) {
-          return res.status(400).json({ error: 'Аудиофайл не найден в запросе' });
-        }
-        
-        console.log('Отправляем аудио в Whisper API...');
-        
-        // Создаем новый FormData для отправки в API
-        const formData = new FormData();
-        formData.append('file', audioBuffer, {
-          filename: 'audio.wav',
-          contentType: audioMimeType
-        });
-        formData.append('model', WHISPER_MODEL_ID);
-        
-        // Полный URL для API запроса
-        const apiUrl = 'https://api.groq.com/openai/v1/audio/transcriptions';
-        console.log('Отправляем запрос к Whisper API на URL:', apiUrl);
-        console.log('Используемая модель:', WHISPER_MODEL_ID);
-        
-        try {
-          // Отправляем запрос к Whisper API
-          const whisperResponse = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${GROQ_API_KEY}`
-            },
-            body: formData
-          });
-          
-          console.log('Получен ответ от API. Статус:', whisperResponse.status);
-          console.log('Заголовки ответа:', JSON.stringify(whisperResponse.headers.raw()));
-          
-          // Получаем ответ в виде текста для диагностики
-          const responseText = await whisperResponse.text();
-          
-          // Пытаемся распарсить JSON
-          let whisperData;
-          try {
-            whisperData = JSON.parse(responseText);
-          } catch (e) {
-            console.error('Ошибка при парсинге JSON ответа:', e);
-            console.log('Текст ответа:', responseText);
-            return res.status(500).json({ 
-              error: 'Ошибка при парсинге ответа API: ' + e.message,
-              rawResponse: responseText.substring(0, 500) // Обрезаем большие ответы
-            });
-          }
-          
-          if (!whisperResponse.ok) {
-            console.error('Whisper API Error:', whisperData);
-            return res.status(whisperResponse.status).json({ 
-              error: whisperData.error?.message || 'Ошибка при обращении к API Whisper',
-              status: whisperResponse.status,
-              details: whisperData
-            });
-          }
-          
-          console.log('Получен ответ от Whisper API:', whisperData);
-          const transcribedText = whisperData.text;
-          
-          // Отправляем транскрибированный текст к LLM модели
-          const llmResult = await sendToLLM(transcribedText);
-          
-          if (llmResult.success) {
-            res.json({
-              transcribedText: transcribedText,
-              llmResponse: llmResult.text,
-              model: llmResult.model,
-              usage: llmResult.usage
-            });
-          } else {
-            res.status(500).json({ error: llmResult.error });
-          }
-        } catch (error) {
-          console.error('Error processing audio:', error);
-          res.status(500).json({ error: 'Ошибка при обработке аудио: ' + error.message });
-        }
-      } catch (error) {
-        console.error('Error processing audio:', error);
-        res.status(500).json({ error: 'Ошибка при обработке аудио: ' + error.message });
-      }
-    });
-    
-    // Обработка ошибок
-    busboy.on('error', (error) => {
-      console.error('Busboy error:', error);
-      res.status(500).json({ error: 'Ошибка при обработке формы: ' + error.message });
-    });
-    
-    // Запускаем обработку
-    req.pipe(busboy);
-    
+    } catch (error) {
+      console.error('Ошибка при обработке аудио:', error);
+      res.status(500).json({ 
+        error: 'Ошибка при обработке аудио: ' + error.message,
+        details: error.stack
+      });
+    }
   } catch (error) {
-    console.error('Audio Route Error:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + error.message });
+    console.error('Общая ошибка API аудио:', error);
+    res.status(500).json({ 
+      error: 'Внутренняя ошибка сервера: ' + error.message,
+      details: error.stack
+    });
   }
 } 

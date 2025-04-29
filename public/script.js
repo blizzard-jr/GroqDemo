@@ -233,17 +233,8 @@ document.addEventListener('DOMContentLoaded', () => {
       
       console.log('Отправка аудио на сервер, размер:', fileToSend.size, 'тип:', fileToSend.type);
       
-      // Определяем, используем ли мы Vercel
-      const isVercel = window.location.hostname.includes('vercel.app') || 
-                      window.location.hostname.includes('.vercel.app');
-      
-      // Выбираем URL в зависимости от окружения
-      const url = isVercel ? '/api/audio-alt' : '/api/audio';
-      
-      console.log('Отправка аудио на:', url);
-      
       // Отправляем запрос
-      const response = await fetch(url, {
+      const response = await fetch('/api/audio', {
         method: 'POST',
         body: formData,
       });
