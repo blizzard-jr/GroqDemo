@@ -217,16 +217,33 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       // Создаем FormData для отправки файла
       const formData = new FormData();
-      // Добавляем аудио файл
-      formData.append('audio', audioBlob, 'recording.wav');
+      
+      // Важно! Проверяем формат blob и явно указываем MIME тип и расширение
+      let fileToSend = audioBlob;
+      // Если blob не указывает на WAV, создаем новый с правильным MIME типом
+      if (audioBlob.type !== 'audio/wav') {
+        fileToSend = new Blob([audioBlob], { type: 'audio/wav' });
+      }
+      
+      // Добавляем аудио файл с явным типом и именем
+      formData.append('audio', fileToSend, 'recording.wav');
+      
       // Добавляем модель
       formData.append('model', 'whisper-large-v3-turbo');
+      
+      console.log('Отправка аудио на сервер, размер:', fileToSend.size, 'тип:', fileToSend.type);
       
       // Используем новый API-роут для аудио
       const response = await fetch('/api/audio', {
         method: 'POST',
         body: formData,
       });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Серверная ошибка:', response.status, errorText);
+        throw new Error(`Ошибка сервера: ${response.status} ${errorText}`);
+      }
       
       const data = await response.json();
       
@@ -251,7 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (error) {
       console.error('Error:', error);
-      errorText.textContent = 'Не удалось подключиться к серверу';
+      errorText.textContent = error.message || 'Не удалось подключиться к серверу';
       errorContainer.classList.remove('hidden');
     } finally {
       // Скрываем индикатор загрузки
