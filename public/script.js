@@ -222,16 +222,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Добавляем модель
       formData.append('model', 'whisper-large-v3-turbo');
       
-      // Определяем окружение и выбираем соответствующий API эндпоинт
-      const isProduction = 
-        window.location.hostname.includes('vercel.app') || 
-        !['localhost', '127.0.0.1'].some(h => window.location.hostname.includes(h));
-      
-      // Используем альтернативный роут в production
-      const endpoint = isProduction ? '/api/audio-alt' : '/api/audio';
-      console.log(`Используется ${isProduction ? 'production' : 'development'} эндпоинт: ${endpoint}`);
-      
-      const response = await fetch(endpoint, {
+      // Используем новый API-роут для аудио
+      const response = await fetch('/api/audio', {
         method: 'POST',
         body: formData,
       });
