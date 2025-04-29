@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import FormData from 'form-data';
 import formidable from 'formidable';
+import Busboy from 'busboy';
 import { GROQ_API_KEY, MODEL_ID, WHISPER_MODEL_ID } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -89,6 +90,49 @@ async function sendToLLM(prompt) {
   }
 }
 
+// Функция для отправки запроса к Whisper API
+async function sendToWhisper(audioPath, audioMimetype = 'audio/wav') {
+  console.log('Вызов функции sendToWhisper с файлом:', audioPath);
+  
+  try {
+    // Создаем форму с помощью FormData
+    const form = new FormData();
+    
+    // Читаем файл в буфер
+    const fileBuffer = await fs.readFile(audioPath);
+    
+    // Добавляем файл в форму
+    form.append('file', new Blob([fileBuffer]), {
+      filename: path.basename(audioPath),
+      contentType: audioMimetype
+    });
+    
+    // Добавляем модель
+    form.append('model', WHISPER_MODEL_ID);
+    
+    // Делаем запрос к API Whisper
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`
+      },
+      body: form
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Whisper API Error:', errorData);
+      throw new Error(errorData.error?.message || `Ошибка API: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error in sendToWhisper:', error);
+    throw error;
+  }
+}
+
 // API route для отправки текстовых запросов к Groq
 app.post('/api/chat', async (req, res) => {
   try {
@@ -145,7 +189,6 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${GROQ_API_KEY}`
-        // headers добавятся автоматически через form-data
       },
       body: formData
     });
@@ -182,53 +225,72 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
   }
 });
 
-// Альтернативный API route для аудио с использованием formidable
+// API route для отправки аудио запросов на Vercel без использования файловой системы
 app.post('/api/audio-alt', async (req, res) => {
   try {
     console.log('Получен запрос на /api/audio-alt');
     
-    // Создаем форму с помощью formidable
-    const form = formidable({
-      uploadDir: path.join(__dirname, 'public', 'uploads'),
-      keepExtensions: true,
-      maxFileSize: 10 * 1024 * 1024 // 10MB
+    // Проверяем, что у нас multipart/form-data
+    if (!req.headers['content-type']?.includes('multipart/form-data')) {
+      return res.status(400).json({ error: 'Ожидается multipart/form-data' });
+    }
+    
+    // Создаем парсер для multipart/form-data
+    const busboy = Busboy({ headers: req.headers });
+    
+    // Переменные для хранения данных
+    let audioFile = null;
+    let modelName = WHISPER_MODEL_ID; // По умолчанию используем модель из конфига
+    
+    // Обработка полей формы
+    busboy.on('field', (fieldname, val) => {
+      if (fieldname === 'model') {
+        modelName = val;
+      }
     });
     
-    // Парсим форму
-    form.parse(req, async (err, fields, files) => {
-      if (err) {
-        console.error('Formidable error:', err);
-        return res.status(500).json({ error: 'Ошибка при обработке формы: ' + err.message });
-      }
-      
-      const audioFile = files.audio?.[0];
-      if (!audioFile) {
-        return res.status(400).json({ error: 'Аудиофайл обязателен' });
-      }
-      
-      console.log('Аудиофайл получен:', audioFile.originalFilename);
-      
-      try {
-        // Создаем новый FormData для отправки в Groq API
-        const formData = new FormData();
+    // Обработка файлов
+    busboy.on('file', async (fieldname, file, info) => {
+      if (fieldname === 'audio') {
+        const { filename, encoding, mimeType } = info;
+        console.log(`Получен файл: ${filename}, тип: ${mimeType}`);
         
-        // Добавляем файл
-        const fileStream = fs.createReadStream(audioFile.filepath);
-        formData.append('file', fileStream, {
-          filename: audioFile.originalFilename || 'audio.wav',
-          contentType: audioFile.mimetype || 'audio/wav'
+        // Собираем файл в буфер
+        const chunks = [];
+        file.on('data', (chunk) => {
+          chunks.push(chunk);
         });
         
-        // Добавляем модель
-        formData.append('model', WHISPER_MODEL_ID);
+        // Когда файл полностью получен
+        file.on('end', () => {
+          audioFile = Buffer.concat(chunks);
+          console.log(`Файл получен, размер: ${audioFile.length} байт`);
+        });
+      }
+    });
+    
+    // После полной обработки формы
+    busboy.on('finish', async () => {
+      try {
+        if (!audioFile) {
+          return res.status(400).json({ error: 'Аудиофайл не найден в запросе' });
+        }
         
-        console.log('Отправляем запрос к Whisper API');
+        console.log('Отправляем аудио в Whisper API...');
         
-        // Отправляем запрос
+        // Создаем новый FormData для отправки в API
+        const formData = new FormData();
+        formData.append('file', audioFile, {
+          filename: 'audio.wav',
+          contentType: 'audio/wav'
+        });
+        formData.append('model', modelName);
+        
         const whisperResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${GROQ_API_KEY}`
+            'Authorization': `Bearer ${GROQ_API_KEY}`,
+            // Headers для form-data добавятся автоматически
           },
           body: formData
         });
@@ -243,6 +305,7 @@ app.post('/api/audio-alt', async (req, res) => {
         }
         
         console.log('Получен ответ от Whisper API:', whisperData);
+        
         const transcribedText = whisperData.text;
         
         // Отправляем транскрибированный текст к LLM модели
@@ -259,12 +322,22 @@ app.post('/api/audio-alt', async (req, res) => {
           res.status(500).json({ error: llmResult.error });
         }
       } catch (error) {
-        console.error('Processing Error:', error);
+        console.error('Error processing audio:', error);
         res.status(500).json({ error: 'Ошибка при обработке аудио: ' + error.message });
       }
     });
+    
+    // Обработка ошибок
+    busboy.on('error', (error) => {
+      console.error('Busboy error:', error);
+      res.status(500).json({ error: 'Ошибка при обработке формы: ' + error.message });
+    });
+    
+    // Запускаем обработку
+    req.pipe(busboy);
+    
   } catch (error) {
-    console.error('Audio-Alt Error:', error);
+    console.error('Audio-Alt Route Error:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + error.message });
   }
 });

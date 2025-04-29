@@ -217,7 +217,10 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       // Создаем FormData для отправки файла
       const formData = new FormData();
+      // Добавляем аудио файл
       formData.append('audio', audioBlob, 'recording.wav');
+      // Добавляем модель
+      formData.append('model', 'whisper-large-v3-turbo');
       
       // Определяем окружение и выбираем соответствующий API эндпоинт
       const isProduction = 
