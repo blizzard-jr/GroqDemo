@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs-extra';
 import FormData from 'form-data';
+import formidable from 'formidable';
 import { GROQ_API_KEY, MODEL_ID, WHISPER_MODEL_ID } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -121,34 +122,45 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
       return res.status(400).json({ error: 'Аудиофайл обязателен' });
     }
 
+    console.log('Аудиофайл получен:', req.file);
     const audioFilePath = req.file.path;
-    const audioFileUrl = `${req.protocol}://${req.get('host')}/uploads/${path.basename(audioFilePath)}`;
     
-    // Отправляем запрос к модели Whisper для транскрипции
+    // Создаем новый FormData вручную
     const formData = new FormData();
-    formData.append('file', fs.createReadStream(audioFilePath));
+    
+    // Добавляем файл как поток с readStream
+    const fileStream = fs.createReadStream(audioFilePath);
+    formData.append('file', fileStream, {
+      filename: path.basename(audioFilePath),
+      contentType: req.file.mimetype
+    });
+    
+    // Добавляем название модели
     formData.append('model', WHISPER_MODEL_ID);
     
-    // Получаем заголовки из FormData
-    const formHeaders = formData.getHeaders ? formData.getHeaders() : {};
+    console.log('Отправляем запрос к Whisper API');
     
+    // Отправляем запрос к API
     const whisperResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        ...formHeaders
+        'Authorization': `Bearer ${GROQ_API_KEY}`
+        // headers добавятся автоматически через form-data
       },
       body: formData
     });
     
+    // Получаем и проверяем ответ
     const whisperData = await whisperResponse.json();
     
     if (!whisperResponse.ok) {
+      console.error('Whisper API Error:', whisperData);
       return res.status(whisperResponse.status).json({ 
         error: whisperData.error?.message || 'Ошибка при обращении к API Whisper' 
       });
     }
     
+    console.log('Получен ответ от Whisper API:', whisperData);
     const transcribedText = whisperData.text;
     
     // Отправляем транскрибированный текст к LLM модели
@@ -158,7 +170,6 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
       res.json({
         transcribedText: transcribedText,
         llmResponse: llmResult.text,
-        audioUrl: audioFileUrl,
         model: llmResult.model,
         usage: llmResult.usage
       });
@@ -167,7 +178,94 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
     }
   } catch (error) {
     console.error('Audio Processing Error:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка при обработке аудио' });
+    res.status(500).json({ error: 'Внутренняя ошибка при обработке аудио: ' + error.message });
+  }
+});
+
+// Альтернативный API route для аудио с использованием formidable
+app.post('/api/audio-alt', async (req, res) => {
+  try {
+    console.log('Получен запрос на /api/audio-alt');
+    
+    // Создаем форму с помощью formidable
+    const form = formidable({
+      uploadDir: path.join(__dirname, 'public', 'uploads'),
+      keepExtensions: true,
+      maxFileSize: 10 * 1024 * 1024 // 10MB
+    });
+    
+    // Парсим форму
+    form.parse(req, async (err, fields, files) => {
+      if (err) {
+        console.error('Formidable error:', err);
+        return res.status(500).json({ error: 'Ошибка при обработке формы: ' + err.message });
+      }
+      
+      const audioFile = files.audio?.[0];
+      if (!audioFile) {
+        return res.status(400).json({ error: 'Аудиофайл обязателен' });
+      }
+      
+      console.log('Аудиофайл получен:', audioFile.originalFilename);
+      
+      try {
+        // Создаем новый FormData для отправки в Groq API
+        const formData = new FormData();
+        
+        // Добавляем файл
+        const fileStream = fs.createReadStream(audioFile.filepath);
+        formData.append('file', fileStream, {
+          filename: audioFile.originalFilename || 'audio.wav',
+          contentType: audioFile.mimetype || 'audio/wav'
+        });
+        
+        // Добавляем модель
+        formData.append('model', WHISPER_MODEL_ID);
+        
+        console.log('Отправляем запрос к Whisper API');
+        
+        // Отправляем запрос
+        const whisperResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${GROQ_API_KEY}`
+          },
+          body: formData
+        });
+        
+        const whisperData = await whisperResponse.json();
+        
+        if (!whisperResponse.ok) {
+          console.error('Whisper API Error:', whisperData);
+          return res.status(whisperResponse.status).json({ 
+            error: whisperData.error?.message || 'Ошибка при обращении к API Whisper' 
+          });
+        }
+        
+        console.log('Получен ответ от Whisper API:', whisperData);
+        const transcribedText = whisperData.text;
+        
+        // Отправляем транскрибированный текст к LLM модели
+        const llmResult = await sendToLLM(transcribedText);
+        
+        if (llmResult.success) {
+          res.json({
+            transcribedText: transcribedText,
+            llmResponse: llmResult.text,
+            model: llmResult.model,
+            usage: llmResult.usage
+          });
+        } else {
+          res.status(500).json({ error: llmResult.error });
+        }
+      } catch (error) {
+        console.error('Processing Error:', error);
+        res.status(500).json({ error: 'Ошибка при обработке аудио: ' + error.message });
+      }
+    });
+  } catch (error) {
+    console.error('Audio-Alt Error:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера: ' + error.message });
   }
 });
 
@@ -175,6 +273,24 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// Обработчик ошибок
+app.use((err, req, res, next) => {
+  console.error('Server Error:', err);
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+  });
+});
+
+// Создадим директорию для загрузок, если её нет
+try {
+  fs.ensureDirSync(path.join(__dirname, 'public', 'uploads'));
+  console.log('Директория uploads создана или уже существует');
+} catch (error) {
+  console.error('Ошибка при создании директории uploads:', error);
+}
 
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);

@@ -219,7 +219,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.wav');
       
-      const response = await fetch('/api/audio', {
+      // Определяем окружение и выбираем соответствующий API эндпоинт
+      const isProduction = 
+        window.location.hostname.includes('vercel.app') || 
+        !['localhost', '127.0.0.1'].some(h => window.location.hostname.includes(h));
+      
+      // Используем альтернативный роут в production
+      const endpoint = isProduction ? '/api/audio-alt' : '/api/audio';
+      console.log(`Используется ${isProduction ? 'production' : 'development'} эндпоинт: ${endpoint}`);
+      
+      const response = await fetch(endpoint, {
         method: 'POST',
         body: formData,
       });
