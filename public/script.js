@@ -248,13 +248,39 @@ document.addEventListener('DOMContentLoaded', () => {
         body: formData,
       });
       
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Серверная ошибка:', response.status, errorText);
-        throw new Error(`Ошибка сервера: ${response.status} ${errorText}`);
+      console.log('Получен ответ со статусом:', response.status);
+      
+      // Получаем ответ в текстовом формате для диагностики
+      const responseText = await response.text();
+      console.log('Текст ответа:', responseText);
+      
+      let data;
+      try {
+        // Пытаемся распарсить JSON
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error('Ошибка при парсинге JSON:', e);
+        throw new Error(`Некорректный формат ответа сервера: ${responseText.substring(0, 100)}...`);
       }
       
-      const data = await response.json();
+      if (!response.ok) {
+        console.error('Серверная ошибка:', response.status, data);
+        let errorMessage = 'Ошибка сервера';
+        
+        if (data && data.error) {
+          errorMessage = `${errorMessage}: ${data.error}`;
+        }
+        
+        if (data && data.status) {
+          errorMessage = `${errorMessage} (${data.status})`;
+        }
+        
+        if (data && data.details) {
+          errorMessage = `${errorMessage}\nДетали: ${JSON.stringify(data.details)}`;
+        }
+        
+        throw new Error(errorMessage);
+      }
       
       if (response.ok) {
         // Показываем результат
