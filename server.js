@@ -198,6 +198,20 @@ app.post('/api/audio', upload.single('audio'), async (req, res) => {
     
     if (!whisperResponse.ok) {
       console.error('Whisper API Error:', whisperData);
+      // Добавим больше информации об ошибке
+      console.error('Статус ответа:', whisperResponse.status);
+      console.error('Заголовки ответа:', whisperResponse.headers);
+      
+      // Если ошибка 404 (Not Found), это может быть связано с неправильным URL или моделью
+      if (whisperResponse.status === 404) {
+        console.error('Ошибка 404: Проверьте правильность URL и доступность модели:', WHISPER_MODEL_ID);
+        
+        // Проверим, не устарела ли модель или API
+        return res.status(500).json({
+          error: 'Модель не найдена. Возможно, модель устарела или API изменился. Проверьте актуальность API и названия модели.'
+        });
+      }
+      
       return res.status(whisperResponse.status).json({ 
         error: whisperData.error?.message || 'Ошибка при обращении к API Whisper' 
       });
@@ -299,6 +313,20 @@ app.post('/api/audio-alt', async (req, res) => {
         
         if (!whisperResponse.ok) {
           console.error('Whisper API Error:', whisperData);
+          // Добавим больше информации об ошибке
+          console.error('Статус ответа:', whisperResponse.status);
+          console.error('Заголовки ответа:', whisperResponse.headers);
+          
+          // Если ошибка 404 (Not Found), это может быть связано с неправильным URL или моделью
+          if (whisperResponse.status === 404) {
+            console.error('Ошибка 404: Проверьте правильность URL и доступность модели:', WHISPER_MODEL_ID);
+            
+            // Проверим, не устарела ли модель или API
+            return res.status(500).json({
+              error: 'Модель не найдена. Возможно, модель устарела или API изменился. Проверьте актуальность API и названия модели.'
+            });
+          }
+          
           return res.status(whisperResponse.status).json({ 
             error: whisperData.error?.message || 'Ошибка при обращении к API Whisper' 
           });
